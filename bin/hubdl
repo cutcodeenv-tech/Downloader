@@ -19,13 +19,14 @@ ROOT=$(cd -P "$(dirname "$SOURCE")/.." && pwd)
 . "$ROOT/lib/dropbox.sh"
 . "$ROOT/lib/gdrive.sh"
 . "$ROOT/lib/bridge.sh"
+. "$ROOT/lib/update.sh"
 
 command -v fzf >/dev/null || die "Нужен fzf: brew install fzf (или запусти setup.sh)"
 command -v jq  >/dev/null || die "Нужен jq: brew install jq (или запусти setup.sh)"
 
 case ${1-} in
   -h|--help|help)
-    say "Использование: hubdl [ссылка] [проект] | hubdl settings"
+    say "Использование: hubdl [ссылка] [проект] | hubdl settings | hubdl update"
     say "               hubdl bridge [enable|stop|disable|status|log]"
     exit 0
     ;;
@@ -110,14 +111,15 @@ run_download() { # [url] [project]
 
 main_menu() {
   while true; do
-    local choice
-    choice=$(menu "hubdl — загрузчик материалов" \
-      "Новая загрузка" \
-      "Telegram мост" \
-      "Настройки" \
-      "Открыть папку проектов" \
-      "Выход")
+    local choice items
+    update_check
+    items=("Новая загрузка" "Telegram мост" "Настройки" "Открыть папку проектов" "Выход")
+    if [ "$UPDATE_AVAILABLE" -gt 0 ]; then
+      items=("⬆ Обновить hubdl — доступна новая версия" "${items[@]}")
+    fi
+    choice=$(menu "hubdl — загрузчик материалов" "${items[@]}")
     case $choice in
+      "⬆ Обновить"*)             update_run && exec "$ROOT/bin/hubdl" ;;
       "Новая загрузка")          run_download ;;
       "Telegram мост")           bridge_menu ;;
       "Настройки")               settings_menu ;;
@@ -130,6 +132,7 @@ main_menu() {
 case ${1-} in
   "")       main_menu ;;
   settings) settings_menu ;;
+  update)   update_run ;;
   bridge)
     case ${2-} in
       "")      bridge_worker ;;
