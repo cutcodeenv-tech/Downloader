@@ -1,4 +1,4 @@
-# Загрузка файла с прогрессом: проценты, скорость, ETA.
+# Загрузка файла с прогрессом (проценты, скорость, ETA) и докачкой после обрыва.
 # curl работает в фоне, строка статуса обновляется раз в секунду.
 
 remote_headers() { curl -fsIL --max-time 20 "$1" 2>/dev/null | tr -d '\r'; }
@@ -19,6 +19,12 @@ headers_filename() {
 }
 
 remote_content_length() { headers_length "$(remote_headers "$1")"; }
+
+file_size() {
+  local size
+  size=$(wc -c <"$1" 2>/dev/null | tr -d '[:space:]')
+  printf '%s' "${size:-0}"
+}
 
 progress_line() { # size total speed_bytes_per_sec
   awk -v s="$1" -v t="$2" -v speed="$3" '
@@ -42,8 +48,8 @@ progress_line() { # size total speed_bytes_per_sec
     }'
 }
 
-finish_line() { # size elapsed_secs
-  awk -v s="$1" -v e="$2" -v g="$C_GREEN" -v r="$C_RESET" '
+finish_line() { # size downloaded_bytes elapsed_secs
+  awk -v s="$1" -v d="$2" -v e="$3" -v g="$C_GREEN" -v r="$C_RESET" '
     function hb(b) {
       if (b >= 1073741824) return sprintf("%.2f GB", b / 1073741824)
       if (b >= 1048576)    return sprintf("%.1f MB", b / 1048576)
@@ -56,28 +62,25 @@ finish_line() { # size elapsed_secs
       return sprintf("%d:%02d", x / 60, x % 60)
     }
     BEGIN {
-      avg = e > 0 ? s / e : s
+      avg = e > 0 ? d / e : d
       printf "  %s✔%s %s за %s (%s/s)", g, r, hb(s), ht(e), hb(avg)
     }'
 }
 
-# fetch_url <url> <dest_file> <label> [total_bytes]
-fetch_url() {
-  local url=$1 dest=$2 label=$3 total=${4-}
-  case $total in '' | null | *[!0-9]*) total="" ;; esac
-  [ -n "$total" ] || total=$(remote_content_length "$url")
-
-  printf '%s↓%s %s\n' "$C_CYAN" "$C_RESET" "$label"
-  curl -fsSL -o "$dest" "$url" &
+# Одна попытка: curl с докачкой (-C -) в фоне + строка прогресса.
+fetch_attempt() { # url dest_file total_bytes
+  local url=$1 dest=$2 total=$3
+  curl -fsSL -C - -o "$dest" "$url" &
   local pid=$!
   trap 'kill "$pid" 2>/dev/null' INT TERM
 
   # скорость сглаживается EMA, чтобы ETA не дёргался на секундных провалах
-  local start prev_size=0 prev_t size now inst ema=0
+  local start initial prev_size prev_t size now inst ema=0
+  initial=$(file_size "$dest"); prev_size=$initial
   start=$(date +%s); prev_t=$start
   while kill -0 "$pid" 2>/dev/null; do
     sleep 1
-    size=$(wc -c <"$dest" 2>/dev/null | tr -d '[:space:]'); size=${size:-0}
+    size=$(file_size "$dest")
     now=$(date +%s)
     if [ "$now" -gt "$prev_t" ]; then
       inst=$(((size - prev_size) / (now - prev_t)))
@@ -94,7 +97,49 @@ fetch_url() {
     printf '\r\033[K'
     return "$status"
   fi
-  size=$(wc -c <"$dest" 2>/dev/null | tr -d '[:space:]'); size=${size:-0}
+  size=$(file_size "$dest")
   now=$(date +%s)
-  printf '\r%s\033[K\n' "$(finish_line "$size" $((now - start)))"
+  printf '\r%s\033[K\n' "$(finish_line "$size" $((size - initial)) $((now - start)))"
+}
+
+# fetch_url <url> <dest_file> <label> [total_bytes]
+# Докачивает недокачанное, пропускает уже скачанное, повторяет попытки при обрыве.
+fetch_url() {
+  local url=$1 dest=$2 label=$3 total=${4-}
+  case $total in '' | null | *[!0-9]*) total="" ;; esac
+  [ -n "$total" ] || total=$(remote_content_length "$url")
+
+  local existing
+  existing=$(file_size "$dest")
+  if [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$existing" -eq "$total" ]; then
+    printf '  %s✔%s %s — уже скачан\n' "$C_GREEN" "$C_RESET" "$label"
+    return 0
+  fi
+  if [ "$existing" -gt 0 ]; then
+    printf '%s↓%s %s %s(докачка)%s\n' "$C_CYAN" "$C_RESET" "$label" "$C_DIM" "$C_RESET"
+  else
+    printf '%s↓%s %s\n' "$C_CYAN" "$C_RESET" "$label"
+  fi
+
+  local attempt=1 attempts=4 status
+  while :; do
+    status=0
+    fetch_attempt "$url" "$dest" "$total" || status=$?
+    case $status in
+      0)  return 0 ;;
+      22) return 22 ;;   # HTTP-ошибка (404/403/416) — повтор не поможет
+      33)
+        warn "Сервер не поддерживает докачку — начинаю файл заново."
+        rm -f "$dest"
+        ;;
+      *)
+        [ "$status" -ge 128 ] && return "$status"   # прервано пользователем
+        warn "Обрыв соединения (curl: $status)."
+        ;;
+    esac
+    attempt=$((attempt + 1))
+    [ "$attempt" -le "$attempts" ] || return "$status"
+    warn "Пробую докачать — попытка $attempt из $attempts…"
+    sleep 2
+  done
 }
