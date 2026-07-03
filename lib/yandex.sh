@@ -3,13 +3,8 @@
 
 YD_API="https://cloud-api.yandex.net/v1/disk/public/resources"
 
-yd_fetch_file() { # href dest_file label
-  say "${C_CYAN}↓${C_RESET} $3"
-  curl -fL -# -o "$2" "$1" || die "Не удалось скачать: $3"
-}
-
 download_yandex_public() { # url dest_dir
-  local url=$1 dest=$2 meta type name href
+  local url=$1 dest=$2 meta type name href size
   meta=$(curl -fsS -G "$YD_API" --data-urlencode "public_key=$url") \
     || die "Яндекс API не ответил. Проверь ссылку (и не запрещено ли скачивание владельцем)."
   type=$(printf '%s' "$meta" | jq -r '.type // empty')
@@ -17,11 +12,12 @@ download_yandex_public() { # url dest_dir
   case $type in
     file)
       href=$(printf '%s' "$meta" | jq -r '.file // empty')
+      size=$(printf '%s' "$meta" | jq -r '.size // empty')
       if [ -z "$href" ]; then
         href=$(curl -fsS -G "$YD_API/download" --data-urlencode "public_key=$url" | jq -r '.href // empty')
       fi
       [ -n "$href" ] || die "Яндекс не отдал ссылку на скачивание."
-      yd_fetch_file "$href" "$dest/$name" "$name"
+      fetch_url "$href" "$dest/$name" "$name" "$size" || die "Не удалось скачать: $name"
       ;;
     dir)
       mkdir -p "$dest/$name"
@@ -46,8 +42,8 @@ yd_walk() { # public_key inner_path dest_dir
     count=$(printf '%s' "$page" | jq '._embedded.items | length')
     [ "$count" -gt 0 ] || break
 
-    local itype ipath iname ifile
-    while IFS=$'\t' read -r itype ipath iname ifile; do
+    local itype ipath iname ifile isize
+    while IFS=$'\t' read -r itype ipath iname ifile isize; do
       if [ "$itype" = "dir" ]; then
         yd_walk "$key" "$ipath" "$dest/$iname"
       else
@@ -57,9 +53,9 @@ yd_walk() { # public_key inner_path dest_dir
             --data-urlencode "path=$ipath" | jq -r '.href // empty')
         fi
         [ -n "$ifile" ] || die "Яндекс не отдал ссылку на файл: $iname"
-        yd_fetch_file "$ifile" "$dest/$iname" "$path$iname"
+        fetch_url "$ifile" "$dest/$iname" "$path$iname" "$isize" || die "Не удалось скачать: $iname"
       fi
-    done < <(printf '%s' "$page" | jq -r '._embedded.items[] | [.type, .path, .name, (.file // "")] | @tsv')
+    done < <(printf '%s' "$page" | jq -r '._embedded.items[] | [.type, .path, .name, (.file // ""), (.size // "")] | @tsv')
 
     offset=$((offset + count))
     [ "$count" -lt "$limit" ] && break

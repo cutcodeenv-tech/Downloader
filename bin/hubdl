@@ -12,6 +12,7 @@ done
 ROOT=$(cd -P "$(dirname "$SOURCE")/.." && pwd)
 
 . "$ROOT/lib/ui.sh"
+. "$ROOT/lib/progress.sh"
 . "$ROOT/lib/config.sh"
 . "$ROOT/lib/yandex.sh"
 . "$ROOT/lib/webdav.sh"
@@ -46,8 +47,15 @@ detect_source() {
 }
 
 download_direct() { # url dest
-  say "${C_CYAN}↓${C_RESET} Прямая ссылка…"
-  (cd "$2" && curl -fL -# -O -J "$1") || die "Не удалось скачать по прямой ссылке."
+  local url=$1 dest=$2 headers name total
+  headers=$(remote_headers "$url")
+  name=$(headers_filename "$headers")
+  if [ -z "$name" ]; then
+    name=$(basename "${url%%\?*}")
+    name=${name:-download}
+  fi
+  total=$(headers_length "$headers")
+  fetch_url "$url" "$dest/$name" "$name" "$total" || die "Не удалось скачать по прямой ссылке."
 }
 
 # --- выбор/создание проекта ---
