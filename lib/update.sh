@@ -1,7 +1,6 @@
 # Проверка и установка обновлений из GitHub.
-# fetch выполняется в фоне не чаще раза в 15 минут, сравнение HEAD..origin/main локальное.
+# fetch выполняется в фоне один раз при каждом запуске, сравнение HEAD..origin/main локальное.
 
-UPDATE_STAMP="$CONFIG_DIR/last-update-check"
 UPDATE_AVAILABLE=0
 
 update_check() {
@@ -9,12 +8,8 @@ update_check() {
   git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || return 0
   git -C "$ROOT" remote get-url origin >/dev/null 2>&1 || return 0
 
-  local now last=0
-  now=$(date +%s)
-  [ -f "$UPDATE_STAMP" ] && last=$(cat "$UPDATE_STAMP" 2>/dev/null || printf 0)
-  case $last in '' | *[!0-9]*) last=0 ;; esac
-  if [ $((now - last)) -ge 900 ]; then
-    printf '%s' "$now" >"$UPDATE_STAMP"
+  if [ -z "${UPDATE_FETCHED-}" ]; then
+    UPDATE_FETCHED=1
     ( git -C "$ROOT" fetch --quiet origin main 2>/dev/null & )
   fi
 
