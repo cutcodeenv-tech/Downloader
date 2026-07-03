@@ -25,13 +25,20 @@ command -v jq  >/dev/null || die "Нужен jq: brew install jq (или зап�
 
 case ${1-} in
   -h|--help|help)
-    say "Использование: hubdl [ссылка] [проект] | hubdl bridge | hubdl settings"
+    say "Использование: hubdl [ссылка] [проект] | hubdl settings"
+    say "               hubdl bridge [enable|disable|status|log]"
     exit 0
     ;;
 esac
 
 load_config
-[ -f "$CONFIG_FILE" ] || first_run
+if [ ! -f "$CONFIG_FILE" ]; then
+  if [ -t 0 ]; then
+    first_run
+  else
+    die "hubdl не настроен — запусти hubdl в терминале для первой настройки."
+  fi
+fi
 
 # --- определение источника по ссылке/пути ---
 detect_source() {
@@ -112,7 +119,7 @@ main_menu() {
       "Выход")
     case $choice in
       "Новая загрузка")          run_download ;;
-      "Telegram мост")           bridge_worker ;;
+      "Telegram мост")           bridge_menu ;;
       "Настройки")               settings_menu ;;
       "Открыть папку проектов")  open "$DOWNLOAD_ROOT" ;;
       *)                         exit 0 ;;
@@ -123,6 +130,15 @@ main_menu() {
 case ${1-} in
   "")       main_menu ;;
   settings) settings_menu ;;
-  bridge)   bridge_worker ;;
+  bridge)
+    case ${2-} in
+      "")      bridge_worker ;;
+      enable)  bridge_autostart_enable ;;
+      disable) bridge_autostart_disable ;;
+      status)  bridge_status ;;
+      log)     bridge_show_log ;;
+      *)       die "Неизвестная подкоманда: hubdl bridge $2" ;;
+    esac
+    ;;
   *)        run_download "$1" "${2-}" ;;
 esac

@@ -2,6 +2,11 @@
 # из Editor_hub на VPS) и шлёт обратно прогресс. Протокол совместим с Node-клиентом:
 # POST JSON + заголовок x-bridge-secret, эндпоинты /api/internal/*.
 
+BRIDGE_LABEL="com.hubdl.bridge"
+BRIDGE_PLIST="$HOME/Library/LaunchAgents/$BRIDGE_LABEL.plist"
+BRIDGE_LOG="$HOME/Library/Logs/hubdl-bridge.log"
+BRIDGE_PID_FILE="$CONFIG_DIR/bridge.pid"
+
 bridge_post() { # route json_body
   curl -fsS --max-time 10 -X POST \
     -H 'Content-Type: application/json' \
@@ -216,19 +221,42 @@ bridge_setup() {
   ok "Сохранено."
 }
 
+bridge_running_pid() {
+  local pid
+  [ -f "$BRIDGE_PID_FILE" ] || return 1
+  pid=$(cat "$BRIDGE_PID_FILE" 2>/dev/null)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s' "$pid"
+}
+
 bridge_worker() {
+  local other
+  if other=$(bridge_running_pid) && [ "$other" != "$$" ]; then
+    warn "Мост уже запущен (PID $other) — второй экземпляр не нужен."
+    warn "Остановить фоновый: hubdl bridge disable (или пункт меню)."
+    return 0
+  fi
+
   if [ -z "$BRIDGE_URL" ] || [ -z "$BRIDGE_SECRET" ]; then
-    bridge_setup
-    [ -n "$BRIDGE_URL" ] && [ -n "$BRIDGE_SECRET" ] || { warn "Мост не настроен."; return 0; }
+    if [ -t 0 ]; then
+      bridge_setup
+    fi
+    if [ -z "$BRIDGE_URL" ] || [ -z "$BRIDGE_SECRET" ]; then
+      fail "Мост не настроен — запусти hubdl в терминале и заполни Bridge URL и secret."
+      sleep 30
+      return 1
+    fi
   fi
   [ -n "$AGENT_ID" ] || { AGENT_ID=$(hostname -s 2>/dev/null || hostname); save_config; }
 
+  printf '%s' "$$" >"$BRIDGE_PID_FILE"
+
   say ""
   say "${C_BOLD}Telegram-мост запущен.${C_RESET} Агент: $AGENT_ID → ${BRIDGE_URL%/}"
-  say "${C_DIM}Ctrl-C — остановить мост и вернуться в меню.${C_RESET}"
+  [ -t 0 ] && say "${C_DIM}Ctrl-C — остановить мост и вернуться в меню.${C_RESET}"
 
   BRIDGE_STOP=0
-  trap 'BRIDGE_STOP=1' INT
+  trap 'BRIDGE_STOP=1' INT TERM
 
   local last_hb=0 now payload tid tproj tsrc offline=0
   while [ "$BRIDGE_STOP" -eq 0 ]; do
@@ -257,11 +285,112 @@ bridge_worker() {
       fi
     fi
 
-    printf '\r%s⌛ ожидание задач из Telegram… %s%s\033[K' "$C_DIM" "$(date +%H:%M:%S)" "$C_RESET"
+    # индикатор ожидания — только в живом терминале, чтобы не засорять лог
+    [ -t 1 ] && printf '\r%s⌛ ожидание задач из Telegram… %s%s\033[K' "$C_DIM" "$(date +%H:%M:%S)" "$C_RESET"
     sleep 5
   done
 
-  trap - INT
+  trap - INT TERM
+  rm -f "$BRIDGE_PID_FILE"
   say ""
   ok "Мост остановлен."
+}
+
+# --- фоновый режим через launchd (macOS) ---
+
+bridge_autostart_enable() {
+  if [ -z "$BRIDGE_URL" ] || [ -z "$BRIDGE_SECRET" ]; then
+    bridge_setup
+    [ -n "$BRIDGE_URL" ] && [ -n "$BRIDGE_SECRET" ] || { warn "Мост не настроен."; return 1; }
+  fi
+  # launchd не может исполнять скрипты с внешнего диска (защита съёмных томов),
+  # поэтому фоновая копия кода живёт локально и обновляется при каждом включении
+  local runtime="$HOME/.local/share/hubdl"
+  mkdir -p "$runtime"
+  rm -rf "$runtime/bin" "$runtime/lib"
+  cp -R "$ROOT/bin" "$ROOT/lib" "$runtime/"
+  chmod +x "$runtime/bin/hubdl"
+
+  mkdir -p "$HOME/Library/LaunchAgents" "$(dirname "$BRIDGE_LOG")"
+  cat >"$BRIDGE_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$BRIDGE_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$runtime/bin/hubdl</string>
+    <string>bridge</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$BRIDGE_LOG</string>
+  <key>StandardErrorPath</key><string>$BRIDGE_LOG</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>
+EOF
+  launchctl bootout "gui/$(id -u)" "$BRIDGE_PLIST" 2>/dev/null
+  launchctl enable "gui/$(id -u)/$BRIDGE_LABEL" 2>/dev/null
+  if launchctl bootstrap "gui/$(id -u)" "$BRIDGE_PLIST" 2>/dev/null; then
+    ok "Автозапуск включён: мост работает в фоне и стартует при входе в систему."
+    say "${C_DIM}Лог: $BRIDGE_LOG${C_RESET}"
+  else
+    fail "launchctl не смог загрузить агент — проверь: launchctl print gui/$(id -u)/$BRIDGE_LABEL"
+    return 1
+  fi
+}
+
+bridge_autostart_disable() {
+  launchctl bootout "gui/$(id -u)" "$BRIDGE_PLIST" 2>/dev/null
+  rm -f "$BRIDGE_PLIST"
+  ok "Автозапуск выключен, фоновый мост остановлен."
+}
+
+bridge_status() {
+  local pid
+  if pid=$(bridge_running_pid); then
+    ok "Мост запущен (PID $pid), агент: ${AGENT_ID:-—}."
+  else
+    warn "Мост сейчас не запущен."
+  fi
+  if [ -f "$BRIDGE_PLIST" ]; then
+    say "Автозапуск: ${C_GREEN}включён${C_RESET}"
+  else
+    say "Автозапуск: выключен"
+  fi
+  [ -f "$BRIDGE_LOG" ] && say "${C_DIM}Лог: $BRIDGE_LOG${C_RESET}"
+}
+
+bridge_show_log() {
+  if [ -f "$BRIDGE_LOG" ]; then
+    tail -n 40 "$BRIDGE_LOG" | tr '\r' '\n' | grep -v '^$'
+  else
+    warn "Лога пока нет."
+  fi
+}
+
+bridge_menu() {
+  while true; do
+    local choice
+    choice=$(menu "Telegram мост  (Esc — назад)" \
+      "Запустить в этом окне" \
+      "Автозапуск в фоне: включить" \
+      "Автозапуск в фоне: выключить" \
+      "Статус" \
+      "Показать лог" \
+      "← Назад")
+    case $choice in
+      "Запустить в этом окне")     bridge_worker ;;
+      "Автозапуск в фоне: включить")  bridge_autostart_enable ;;
+      "Автозапуск в фоне: выключить") bridge_autostart_disable ;;
+      "Статус")                    bridge_status ;;
+      "Показать лог")              bridge_show_log ;;
+      *)                           return 0 ;;
+    esac
+  done
 }
