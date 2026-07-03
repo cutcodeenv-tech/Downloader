@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# hubdl — терминальный загрузчик материалов (Яндекс Диск, WebDAV, Dropbox, Google Drive)
+set -u
+
+# --- корень проекта (с учётом symlink) ---
+SOURCE=${BASH_SOURCE[0]}
+while [ -L "$SOURCE" ]; do
+  DIR=$(cd -P "$(dirname "$SOURCE")" && pwd)
+  SOURCE=$(readlink "$SOURCE")
+  case $SOURCE in /*) ;; *) SOURCE=$DIR/$SOURCE ;; esac
+done
+ROOT=$(cd -P "$(dirname "$SOURCE")/.." && pwd)
+
+. "$ROOT/lib/ui.sh"
+. "$ROOT/lib/config.sh"
+. "$ROOT/lib/yandex.sh"
+. "$ROOT/lib/webdav.sh"
+. "$ROOT/lib/dropbox.sh"
+. "$ROOT/lib/gdrive.sh"
+
+command -v fzf >/dev/null || die "Нужен fzf: brew install fzf (или запусти setup.sh)"
+command -v jq  >/dev/null || die "Нужен jq: brew install jq (или запусти setup.sh)"
+
+case ${1-} in
+  -h|--help|help)
+    say "Использование: hubdl [ссылка] [проект] | hubdl settings"
+    exit 0
+    ;;
+esac
+
+load_config
+[ -f "$CONFIG_FILE" ] || first_run
+
+# --- определение источника по ссылке/пути ---
+detect_source() {
+  if [ -n "$WEBDAV_URL" ]; then
+    case $1 in "$WEBDAV_URL"*) echo webdav; return ;; esac
+  fi
+  case $1 in
+    *disk.yandex.*|*yadi.sk*)             echo yandex ;;
+    *dropbox.com*)                        echo dropbox ;;
+    *drive.google.com*|*docs.google.com*) echo gdrive ;;
+    http://*|https://*)                   echo direct ;;
+    *)                                    echo webdav ;;
+  esac
+}
+
+download_direct() { # url dest
+  say "${C_CYAN}↓${C_RESET} Прямая ссылка…"
+  (cd "$2" && curl -fL -# -O -J "$1") || die "Не удалось скачать по прямой ссылке."
+}
+
+# --- выбор/создание проекта ---
+choose_project() {
+  local items choice name
+  items=$(cd "$DOWNLOAD_ROOT" 2>/dev/null && ls -1d ./*/ 2>/dev/null | sed 's#^\./##; s#/$##')
+  choice=$(printf '%s\n%s\n' "+ Новый проект" "$items" | grep -v '^$' | fzf \
+    --reverse --no-info --height=40% --border --prompt='› ' \
+    --header="Проект (папка в $DOWNLOAD_ROOT)")
+  [ -n "$choice" ] || return 1
+  if [ "$choice" = "+ Новый проект" ]; then
+    name=$(ask "Название проекта:")
+    [ -n "$name" ] || return 1
+    choice=$name
+  fi
+  mkdir -p "$DOWNLOAD_ROOT/$choice" || return 1
+  printf '%s' "$choice"
+}
+
+# --- загрузка ---
+run_download() { # [url] [project]
+  local url=${1-} project=${2-} dest kind
+  project=${project:-$(choose_project)} || { warn "Отменено."; return 0; }
+  dest="$DOWNLOAD_ROOT/$project"
+  mkdir -p "$dest"
+  [ -n "$url" ] || url=$(ask "Ссылка или путь WebDAV:")
+  [ -n "$url" ] || { warn "Пустая ссылка — отмена."; return 0; }
+  kind=$(detect_source "$url")
+  say "${C_DIM}Источник: $kind → $dest${C_RESET}"
+  case $kind in
+    yandex)  download_yandex_public "$url" "$dest" ;;
+    dropbox) download_dropbox "$url" "$dest" ;;
+    gdrive)  download_gdrive "$url" "$dest" ;;
+    webdav)  download_webdav "$url" "$dest" ;;
+    direct)  download_direct "$url" "$dest" ;;
+  esac
+  ok "Готово: $dest"
+  if [ -t 0 ] && confirm "Открыть папку?"; then open "$dest"; fi
+}
+
+main_menu() {
+  while true; do
+    local choice
+    choice=$(menu "hubdl — загрузчик материалов" \
+      "Новая загрузка" \
+      "Настройки" \
+      "Открыть папку проектов" \
+      "Выход")
+    case $choice in
+      "Новая загрузка")          run_download ;;
+      "Настройки")               settings_menu ;;
+      "Открыть папку проектов")  open "$DOWNLOAD_ROOT" ;;
+      *)                         exit 0 ;;
+    esac
+  done
+}
+
+case ${1-} in
+  "")       main_menu ;;
+  settings) settings_menu ;;
+  *)        run_download "$1" "${2-}" ;;
+esac
