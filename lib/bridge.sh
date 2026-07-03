@@ -351,6 +351,39 @@ bridge_autostart_disable() {
   ok "Автозапуск выключен, фоновый мост остановлен."
 }
 
+# Останавливает мост сейчас, но автозапуск при входе в систему остаётся:
+# plist не удаляется, поэтому после перезагрузки мост поднимется сам.
+bridge_stop() {
+  local pid stopped=0
+  if launchctl print "gui/$(id -u)/$BRIDGE_LABEL" >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)/$BRIDGE_LABEL" 2>/dev/null
+    stopped=1
+  fi
+  if pid=$(bridge_running_pid); then
+    kill -TERM "$pid" 2>/dev/null
+    stopped=1
+  fi
+  if [ "$stopped" -eq 0 ]; then
+    warn "Мост и так не запущен."
+    return 0
+  fi
+  # воркер завершает текущий цикл — ждём фактической остановки (до 10 с)
+  local i=0
+  while [ "$i" -lt 20 ] && bridge_running_pid >/dev/null; do
+    sleep 0.5
+    i=$((i + 1))
+  done
+  if bridge_running_pid >/dev/null; then
+    warn "Мост ещё завершает текущую загрузку — остановится после неё."
+  fi
+  if [ -f "$BRIDGE_PLIST" ]; then
+    ok "Мост закрыт. После перезагрузки (входа в систему) поднимется снова автоматически."
+    say "${C_DIM}Поднять сейчас, не дожидаясь перезагрузки: «Автозапуск в фоне: включить» или hubdl bridge enable.${C_RESET}"
+  else
+    ok "Мост закрыт."
+  fi
+}
+
 bridge_status() {
   local pid
   if pid=$(bridge_running_pid); then
@@ -360,6 +393,9 @@ bridge_status() {
   fi
   if [ -f "$BRIDGE_PLIST" ]; then
     say "Автозапуск: ${C_GREEN}включён${C_RESET}"
+    if ! bridge_running_pid >/dev/null; then
+      say "${C_DIM}Мост закрыт до перезагрузки — при входе в систему поднимется сам.${C_RESET}"
+    fi
   else
     say "Автозапуск: выключен"
   fi
@@ -380,17 +416,19 @@ bridge_menu() {
     choice=$(menu "Telegram мост  (Esc — назад)" \
       "Запустить в этом окне" \
       "Автозапуск в фоне: включить" \
+      "Закрыть мост (до перезагрузки)" \
       "Автозапуск в фоне: выключить" \
       "Статус" \
       "Показать лог" \
       "← Назад")
     case $choice in
-      "Запустить в этом окне")     bridge_worker ;;
+      "Запустить в этом окне")        bridge_worker ;;
       "Автозапуск в фоне: включить")  bridge_autostart_enable ;;
+      "Закрыть мост"*)                bridge_stop ;;
       "Автозапуск в фоне: выключить") bridge_autostart_disable ;;
-      "Статус")                    bridge_status ;;
-      "Показать лог")              bridge_show_log ;;
-      *)                           return 0 ;;
+      "Статус")                       bridge_status ;;
+      "Показать лог")                 bridge_show_log ;;
+      *)                              return 0 ;;
     esac
   done
 }

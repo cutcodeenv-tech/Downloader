@@ -26,7 +26,7 @@ command -v jq  >/dev/null || die "Нужен jq: brew install jq (или зап�
 case ${1-} in
   -h|--help|help)
     say "Использование: hubdl [ссылка] [проект] | hubdl settings"
-    say "               hubdl bridge [enable|disable|status|log]"
+    say "               hubdl bridge [enable|stop|disable|status|log]"
     exit 0
     ;;
 esac
@@ -134,6 +134,7 @@ case ${1-} in
     case ${2-} in
       "")      bridge_worker ;;
       enable)  bridge_autostart_enable ;;
+      stop)    bridge_stop ;;
       disable) bridge_autostart_disable ;;
       status)  bridge_status ;;
       log)     bridge_show_log ;;
