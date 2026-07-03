@@ -18,13 +18,14 @@ ROOT=$(cd -P "$(dirname "$SOURCE")/.." && pwd)
 . "$ROOT/lib/webdav.sh"
 . "$ROOT/lib/dropbox.sh"
 . "$ROOT/lib/gdrive.sh"
+. "$ROOT/lib/bridge.sh"
 
 command -v fzf >/dev/null || die "Нужен fzf: brew install fzf (или запусти setup.sh)"
 command -v jq  >/dev/null || die "Нужен jq: brew install jq (или запусти setup.sh)"
 
 case ${1-} in
   -h|--help|help)
-    say "Использование: hubdl [ссылка] [проект] | hubdl settings"
+    say "Использование: hubdl [ссылка] [проект] | hubdl bridge | hubdl settings"
     exit 0
     ;;
 esac
@@ -43,6 +44,16 @@ detect_source() {
     *drive.google.com*|*docs.google.com*) echo gdrive ;;
     http://*|https://*)                   echo direct ;;
     *)                                    echo webdav ;;
+  esac
+}
+
+dispatch_download() { # kind source dest
+  case $1 in
+    yandex)  download_yandex_public "$2" "$3" ;;
+    dropbox) download_dropbox "$2" "$3" ;;
+    gdrive)  download_gdrive "$2" "$3" ;;
+    webdav)  download_webdav "$2" "$3" ;;
+    direct)  download_direct "$2" "$3" ;;
   esac
 }
 
@@ -85,13 +96,7 @@ run_download() { # [url] [project]
   [ -n "$url" ] || { warn "Пустая ссылка — отмена."; return 0; }
   kind=$(detect_source "$url")
   say "${C_DIM}Источник: $kind → $dest${C_RESET}"
-  case $kind in
-    yandex)  download_yandex_public "$url" "$dest" ;;
-    dropbox) download_dropbox "$url" "$dest" ;;
-    gdrive)  download_gdrive "$url" "$dest" ;;
-    webdav)  download_webdav "$url" "$dest" ;;
-    direct)  download_direct "$url" "$dest" ;;
-  esac
+  dispatch_download "$kind" "$url" "$dest"
   ok "Готово: $dest"
   if [ -t 0 ] && confirm "Открыть папку?"; then open "$dest"; fi
 }
@@ -101,11 +106,13 @@ main_menu() {
     local choice
     choice=$(menu "hubdl — загрузчик материалов" \
       "Новая загрузка" \
+      "Telegram мост" \
       "Настройки" \
       "Открыть папку проектов" \
       "Выход")
     case $choice in
       "Новая загрузка")          run_download ;;
+      "Telegram мост")           bridge_worker ;;
       "Настройки")               settings_menu ;;
       "Открыть папку проектов")  open "$DOWNLOAD_ROOT" ;;
       *)                         exit 0 ;;
@@ -116,5 +123,6 @@ main_menu() {
 case ${1-} in
   "")       main_menu ;;
   settings) settings_menu ;;
+  bridge)   bridge_worker ;;
   *)        run_download "$1" "${2-}" ;;
 esac

@@ -22,7 +22,7 @@ remote_content_length() { headers_length "$(remote_headers "$1")"; }
 
 file_size() {
   local size
-  size=$(wc -c <"$1" 2>/dev/null | tr -d '[:space:]')
+  size=$( { wc -c <"$1"; } 2>/dev/null | tr -d '[:space:]')
   printf '%s' "${size:-0}"
 }
 
@@ -87,6 +87,14 @@ fetch_attempt() { # url dest_file total_bytes
       if [ "$ema" -eq 0 ]; then ema=$inst; else ema=$(((ema * 7 + inst * 3) / 10)); fi
     fi
     printf '\r%s\033[K' "$(progress_line "$size" "$total" "$ema")"
+    # внешний хук (Telegram-мост): может прервать загрузку, вернув не 0
+    if [ -n "${HUBDL_TICK_HOOK-}" ] && ! "$HUBDL_TICK_HOOK" "$size" "${total:-0}" "$ema"; then
+      kill "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      trap - INT TERM
+      printf '\r\033[K'
+      return 130
+    fi
     prev_size=$size; prev_t=$now
   done
 
@@ -106,6 +114,7 @@ fetch_attempt() { # url dest_file total_bytes
 # Докачивает недокачанное, пропускает уже скачанное, повторяет попытки при обрыве.
 fetch_url() {
   local url=$1 dest=$2 label=$3 total=${4-}
+  HUBDL_CURRENT_LABEL=$label
   case $total in '' | null | *[!0-9]*) total="" ;; esac
   [ -n "$total" ] || total=$(remote_content_length "$url")
 

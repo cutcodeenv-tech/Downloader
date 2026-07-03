@@ -8,6 +8,9 @@ WEBDAV_URL="https://webdav.yandex.ru"
 WEBDAV_USER=""
 WEBDAV_PASS=""
 TRANSFERS=2
+BRIDGE_URL=""
+BRIDGE_SECRET=""
+AGENT_ID=""
 
 load_config() {
   # shellcheck disable=SC1090
@@ -23,6 +26,9 @@ save_config() {
     printf 'WEBDAV_USER=%q\n' "$WEBDAV_USER"
     printf 'WEBDAV_PASS=%q\n' "$WEBDAV_PASS"
     printf 'TRANSFERS=%q\n' "$TRANSFERS"
+    printf 'BRIDGE_URL=%q\n' "$BRIDGE_URL"
+    printf 'BRIDGE_SECRET=%q\n' "$BRIDGE_SECRET"
+    printf 'AGENT_ID=%q\n' "$AGENT_ID"
   } >"$CONFIG_FILE"
   chmod 600 "$CONFIG_FILE"
 }
@@ -50,6 +56,9 @@ settings_menu() {
       "WebDAV логин          ${WEBDAV_USER:-—}" \
       "WebDAV пароль         ${WEBDAV_PASS:+••••••}" \
       "Одновременных загрузок  $TRANSFERS" \
+      "Bridge URL            ${BRIDGE_URL:-—}" \
+      "Bridge secret         ${BRIDGE_SECRET:+••••••}" \
+      "Имя агента (Telegram)  ${AGENT_ID:-—}" \
       "← Назад")
     case $choice in
       "Папка проектов"*)  DOWNLOAD_ROOT=$(ask "Папка проектов:" "$DOWNLOAD_ROOT"); mkdir -p "$DOWNLOAD_ROOT" ;;
@@ -57,6 +66,9 @@ settings_menu() {
       "WebDAV логин"*)    WEBDAV_USER=$(ask "WebDAV логин:" "$WEBDAV_USER") ;;
       "WebDAV пароль"*)   WEBDAV_PASS=$(ask "Пароль приложения WebDAV:" "") ;;
       "Одновременных"*)   TRANSFERS=$(ask "Одновременных загрузок:" "$TRANSFERS") ;;
+      "Bridge URL"*)      BRIDGE_URL=$(ask "Bridge URL (сервер на VPS):" "$BRIDGE_URL") ;;
+      "Bridge secret"*)   BRIDGE_SECRET=$(ask "Bridge secret:" "") ;;
+      "Имя агента"*)      AGENT_ID=$(ask "Имя агента:" "${AGENT_ID:-$(hostname -s 2>/dev/null || hostname)}") ;;
       *)                  return 0 ;;
     esac
     save_config

@@ -18,7 +18,8 @@ download_dropbox() { # url dest_dir
 
   case $name in
     *.zip)
-      if [ -t 0 ] && confirm "Пришёл архив $name. Распаковать?"; then
+      # в режиме моста распаковываем без вопросов
+      if [ "${HUBDL_ASSUME_YES-}" = 1 ] || { [ -t 0 ] && confirm "Пришёл архив $name. Распаковать?"; }; then
         unzip -q "$dest/$name" -d "$dest" && rm "$dest/$name" && ok "Распаковано."
       fi
       ;;
