@@ -303,6 +303,18 @@ bridge_autostart_enable() {
     bridge_setup
     [ -n "$BRIDGE_URL" ] && [ -n "$BRIDGE_SECRET" ] || { warn "Мост не настроен."; return 1; }
   fi
+  # Системные /bin/bash и /usr/bin/curl нельзя добавить в Full Disk Access
+  # (Apple не даёт этого для своих подписанных бинарников), а фоновому мосту
+  # это нужно для записи на внешние диски. Homebrew-версии не защищены так же.
+  if command -v brew >/dev/null && { ! [ -x /opt/homebrew/bin/bash ] || ! [ -x "$(brew --prefix curl 2>/dev/null)/bin/curl" ]; }; then
+    warn "Для записи на внешние диски в фоновом режиме нужны bash и curl из Homebrew (системные Apple не пускает в Full Disk Access)."
+    printf 'Установить brew install bash curl? (y/n) [y] '
+    IFS= read -r answer
+    case ${answer:-y} in
+      y|Y|д|Д) brew install bash curl ;;
+      *) warn "Пропущено — если загрузки на внешний диск будут падать с 'Operation not permitted', смотри README." ;;
+    esac
+  fi
   # launchd не может исполнять скрипты с внешнего диска (защита съёмных томов),
   # поэтому фоновая копия кода живёт локально и обновляется при каждом включении
   local runtime="$HOME/.local/share/hubdl"
@@ -329,7 +341,7 @@ bridge_autostart_enable() {
   <key>StandardErrorPath</key><string>$BRIDGE_LOG</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PATH</key><string>/opt/homebrew/opt/curl/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
 </dict>
 </plist>
@@ -339,6 +351,9 @@ EOF
   if launchctl bootstrap "gui/$(id -u)" "$BRIDGE_PLIST" 2>/dev/null; then
     ok "Автозапуск включён: мост работает в фоне и стартует при входе в систему."
     say "${C_DIM}Лог: $BRIDGE_LOG${C_RESET}"
+    if [ -x /opt/homebrew/bin/bash ]; then
+      say "${C_DIM}Если загрузки на внешний диск падают с 'Operation not permitted': добавь /opt/homebrew/bin/bash и $(brew --prefix curl 2>/dev/null)/bin/curl в System Settings → Privacy & Security → Full Disk Access, затем hubdl bridge disable && hubdl bridge enable.${C_RESET}"
+    fi
   else
     fail "launchctl не смог загрузить агент — проверь: launchctl print gui/$(id -u)/$BRIDGE_LABEL"
     return 1
